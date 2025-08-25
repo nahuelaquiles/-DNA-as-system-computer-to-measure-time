@@ -1,0 +1,75 @@
+import numpy as np
+import pandas as pd
+
+# Sample qubit mapping for DNA bases
+qubit_mapping = {
+    'A': np.array([1, 0]),  # |0⟩
+    'T': np.array([0, 1]),  # |1⟩
+    'C': np.array([1, 1]),  # Superposition state |0⟩ + |1⟩
+    'G': np.array([0, 0])   # Collapsed state
+}
+
+# Function to map a DNA sequence to qubits
+def sequence_to_qubits(sequence):
+    return np.array([qubit_mapping[base] for base in sequence if base in qubit_mapping])
+
+# Function to construct the joint density matrix between coding and non-coding qubits
+def joint_density_matrix(qubits_region1, qubits_region2):
+    n1 = len(qubits_region1)
+    n2 = len(qubits_region2)
+    joint_density = np.zeros((4, 4))  # 4x4 matrix for joint states
+
+    for q1 in qubits_region1:
+        for q2 in qubits_region2:
+            joint_state = np.kron(q1, q2)  # Tensor product
+            joint_density += np.outer(joint_state, joint_state)
+
+    return joint_density / (n1 * n2)  # Normalize by total qubit pairs
+
+# Function to compute the partial trace, yielding the reduced density matrix
+def partial_trace(joint_density, subsystem=0):
+    dim = 2  # Dimension of each subsystem
+    joint_density = joint_density.reshape((dim, dim, dim, dim))
+
+    if subsystem == 0:
+        return np.trace(joint_density, axis1=0, axis2=2)  # Trace out first subsystem
+    else:
+        return np.trace(joint_density, axis1=1, axis2=3)  # Trace out second subsystem
+
+# Function to calculate entanglement entropy based on the reduced density matrix
+def entanglement_entropy(density_matrix):
+    eigenvalues = np.linalg.eigvalsh(density_matrix)
+    return -sum(e * np.log2(e) for e in eigenvalues if e > 0)
+
+# Function to compute entanglement entropy between pairs of coding and non-coding regions
+def compute_entanglement_for_genome(coding_sequences, non_coding_sequences):
+    entanglement_values = []
+
+    for coding_seq, non_coding_seq in zip(coding_sequences, non_coding_sequences):
+        coding_qubits = sequence_to_qubits(coding_seq)
+        non_coding_qubits = sequence_to_qubits(non_coding_seq)
+
+        if len(coding_qubits) > 0 and len(non_coding_qubits) > 0:
+            joint_density = joint_density_matrix(coding_qubits, non_coding_qubits)
+            reduced_density = partial_trace(joint_density, subsystem=0)  # Trace out non-coding region
+            entropy = entanglement_entropy(reduced_density)
+            entanglement_values.append(entropy)
+
+    return entanglement_values
+
+# Sample data: First 5 coding and non-coding regions
+# Example sequences (substitute with actual DNA sequences)
+first_5_coding = ["ATCG", "GCTA", "TACG", "CGTA", "GTAC"]
+first_5_non_coding = ["CGAT", "TAGC", "ATCG", "GTCA", "TACG"]
+
+# Calculate entanglement entropy for the first 5 pairs
+entanglement_first_5_values = compute_entanglement_for_genome(first_5_coding, first_5_non_coding)
+
+# Display the results in a DataFrame
+entanglement_first_5_df = pd.DataFrame({
+    "Coding Sequence": first_5_coding,
+    "Non-Coding Sequence": first_5_non_coding,
+    "Entanglement_Entropy": entanglement_first_5_values
+})
+
+print(entanglement_first_5_df)
