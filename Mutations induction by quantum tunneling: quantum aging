@@ -1,0 +1,167 @@
+import numpy as np
+import scipy.constants as const
+import matplotlib.pyplot as plt
+from scipy.fftpack import fft, ifft, fftfreq, fftshift
+from scipy.stats import ttest_ind
+from scipy.signal import windows
+
+# Physical constants
+hbar = const.hbar      # Reduced Planck's constant (J•s)
+m_p = const.m_p        # Mass of the proton (kg)
+e = const.e            # Elementary charge (C)
+
+# Simulation parameters
+N = 512                # Optimized number of spatial points
+dx = 1e-12             # Spatial step (m)
+dt = 1e-15             # Time step (s)
+num_steps = 100000       # Reduced number of steps for demonstration
+
+# Spatial grid for hydrogen bond
+x_grid = np.linspace(-5e-10, 5e-10, N)
+dx = x_grid[1] - x_grid[0]
+
+# Antenna gain and perturbation amplitude
+gain_dBi = 1.7                      # Antenna gain in dBi
+gain_linear = 10 ** (gain_dBi / 10) # Convert dBi to linear scale
+
+# External field parameters for fractal antenna response
+E0 = 1e-6                           # Electric field amplitude (V/m)
+a = 1e-10                           # Characteristic length scale (m)
+lambda_perturbation = e * E0 * a * gain_linear  # Perturbation amplitude (J)
+
+# Constant frequency (34 GHz) and 0.0008 Hz Doppler shift
+frequency_0 = 34e9  # Base frequency in Hz
+frequency_shift = 0.0008  # Weak shift in Hz
+
+# Noise parameters
+noise_amplitude = 0.05  # Amplitude of Gaussian noise (experiment with values like 0.01, 0.05, 0.1)
+
+# Provided DNA sequence and complementary sequence
+sequence = (
+    "AGCTGTCGATCGTACGGTACGTTAGGCTAGCTTACGATCGTAGCTGATCGTTAGCTGATCGTAGCATGCTAGCATCGTAGCTACGATCGTAGCTAGCTGATCGTACGTAGCTAGCTAGCATGCGTAGCTAGCTACGTACGATGCGTAGCTACGTACGTAGCATCGTAGCTAGCATCGTAGCTAGCTAGCTAGCTAGCATC"
+)
+complementary_sequence = sequence.translate(str.maketrans('ATCG', 'TAGC'))
+
+# Split the sequences into non-coding (first 100 bp) and coding (last 100 bp)
+non_coding_sequence = sequence[:100]
+non_coding_complement = complementary_sequence[:100]
+coding_sequence = sequence[100:]
+coding_complement = complementary_sequence[100:]
+
+# Potential parameters for hydrogen bonds
+potential_params = {
+    'AT': {'a': a, 'V0': 0.065 * const.electron_volt},
+    'TA': {'a': a, 'V0': 0.065 * const.electron_volt},
+    'GC': {'a': a, 'V0': 0.108 * const.electron_volt},
+    'CG': {'a': a, 'V0': 0.108 * const.electron_volt},
+}
+
+# Function to construct the double-well potential
+def double_well_potential(x, a, V0):
+    return V0 * ((x / a)**4 - 2 * (x / a)**2 + 1)
+
+# Function to construct Hamiltonian for a base pair
+def construct_base_pair_hamiltonian(base_pair, x_grid):
+    params = potential_params.get(base_pair, {'a': a, 'V0': 0.0865 * const.electron_volt})
+    V0 = params['V0']
+    a_param = params['a']
+    V_diag = double_well_potential(x_grid, a_param, V0)
+
+    # Kinetic energy operator (finite difference)
+    diag = np.full(N, 2 * hbar**2 / (2 * m_p * dx**2))
+    off_diag = np.full(N - 1, -hbar**2 / (2 * m_p * dx**2))
+    T = np.diag(diag) + np.diag(off_diag, k=1) + np.diag(off_diag, k=-1)
+
+    # Total Hamiltonian
+    H = T + np.diag(V_diag)
+    return H
+
+# Function to initialize the proton's state
+def initialize_proton_state(x_grid, position='left'):
+    sigma = 5e-11  # Width of the wavepacket
+    x0 = -a if position == 'left' else a  # Center position
+    psi_x = (1 / (np.sqrt(sigma * np.sqrt(np.pi)))) * np.exp(-((x_grid - x0)**2) / (2 * sigma**2))
+    return psi_x / np.sqrt(np.sum(np.abs(psi_x)**2) * dx)
+
+# Function to simulate quantum evolution with stochastic resonance (Gaussian noise)
+def simulate_sequence(sequence, complement, region_label):
+    num_base_pairs = len(sequence)
+    tunneling_probabilities = []
+    time_points = []
+
+    for bp_index in range(num_base_pairs):
+        base1 = sequence[bp_index]
+        base2 = complement[bp_index]
+        base_pair = base1 + base2
+
+        # Construct Hamiltonian for the base pair
+        H = construct_base_pair_hamiltonian(base_pair, x_grid)
+
+        # Initialize the proton's state
+        psi_x = initialize_proton_state(x_grid, position='left')
+
+        # Time evolution operators
+        k_grid = fftshift(fftfreq(N, d=dx)) * 2 * np.pi
+        T_k = (hbar**2 * k_grid**2) / (2 * m_p)
+        exp_T = np.exp(-1j * T_k * dt / (2 * hbar))
+
+        # Time evolution with noise
+        P_right = []
+        for step in range(num_steps):
+            t = step * dt
+            # Apply weak frequency shift and add Gaussian noise to the external field
+            omega_t = 2 * np.pi * (frequency_0 + frequency_shift)
+            noise = noise_amplitude * np.random.normal()
+            V_ext = (lambda_perturbation + noise) * np.cos(omega_t * t) * (x_grid / a)
+            H_t_diag = np.diag(H) + V_ext
+            exp_V = np.exp(-1j * H_t_diag * dt / hbar)
+
+            # Split-operator method
+            psi_k = fft(psi_x)
+            psi_k = exp_T * psi_k
+            psi_x = ifft(psi_k)
+            psi_x = exp_V * psi_x
+            psi_k = fft(psi_x)
+            psi_k = exp_T * psi_k
+            psi_x = ifft(psi_k)
+
+            # Normalize every 10 steps
+            if step % 10 == 0:
+                psi_x /= np.sqrt(np.sum(np.abs(psi_x)**2) * dx)
+
+            # Calculate probability of being in the right well
+            right_well = x_grid > 0
+            P_r = np.sum(np.abs(psi_x[right_well])**2) * dx
+            P_right.append(P_r)
+
+        tunneling_probabilities.append(P_right)
+        time_points = [step * dt * 1e9 for step in range(num_steps)]  # Time in ns
+
+        print(f"{region_label} - Base Pair {bp_index + 1}/{num_base_pairs} simulated.")
+
+    return tunneling_probabilities, time_points
+
+# Run simulations for non-coding and coding regions
+print("Starting simulation for Non-Coding Region with Stochastic Resonance...")
+tunneling_nc, time_points = simulate_sequence(non_coding_sequence, non_coding_complement, "Non-Coding Region")
+print("Starting simulation for Coding Region with Stochastic Resonance...")
+tunneling_c, _ = simulate_sequence(coding_sequence, coding_complement, "Coding Region")
+
+# Statistical analysis of tunneling probabilities
+mean_tunneling_nc = np.mean(tunneling_nc, axis=0)
+mean_tunneling_c = np.mean(tunneling_c, axis=0)
+
+# Plotting the average tunneling probabilities
+plt.figure(figsize=(12, 6))
+plt.plot(time_points, mean_tunneling_nc, label='Non-Coding Region')
+plt.plot(time_points, mean_tunneling_c, label='Coding Region', alpha=0.7)
+plt.xlabel('Time (ns)')
+plt.ylabel('Average Tunneling Probability')
+plt.title('Average Proton Tunneling Probability Over Time with Stochastic Resonance')
+plt.legend()
+plt.grid()
+plt.show()
+
+# T-test between regions
+t_stat, p_value = ttest_ind(mean_tunneling_nc, mean_tunneling_c, equal_var=False)
+print(f"T-test on average tunneling probabilities with Stochastic Resonance: Test Statistic = {t_stat}, p-value = {p_value}")
