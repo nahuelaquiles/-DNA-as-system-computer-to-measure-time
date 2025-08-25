@@ -1,0 +1,123 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import ttest_ind, mannwhitneyu
+from scipy.linalg import expm
+import pandas as pd
+import matplotlib.ticker as ticker
+
+# Constants
+hbar = 4.135667696e-15 / (2 * np.pi)  # Reduced Planck's constant in eV•s
+binding_energy_range = (0.01, 0.05)  # eV for diagonal elements
+coupling_strength = 0.025  # eV for off-diagonal elements
+dt = 1e-13  # Time step in seconds
+num_steps = 100000  # Number of time steps
+
+# Define the DNA sequence
+sequence = (
+    "TTCGTCGTTTGTTCTTGGAAAGACAGCGCTGGGGATCGTTCGCTGGATACCACCCGCATAACTGGCTCGTCGCGGTGGGTCAGAGGTCAATGATGAACTTTCAAGTTGACGTGAGAAGCTCTACGGTTGTTGTTCGACTGCTGTTGCGGCCGTCGTGGCGGGTCACGCGTCATGGGCATTCGTCGTTGGCAGTCCCCACGCTAGCGGGGCGCTAGCCACGGGATCGAACTCATCGTGAGGTGAAAGGGCGCAATGGACGCGGCTACGACAAGAGTTGGCCTCACCGACTTGACGTTTCGTTTGCTACGAGAGTCTTTCGCCGATGCGGTGTCGTGGGTGGCTAAAAATCTGCCAGCCAGGCCCGCGGTGCCGGTGCTCTCCGGCGTGTTGTTGACCGGCTCGGACAACGGTCTGACGATTTCCGGATTCGACTACGAGGTTTCCGCCGAGGCCCAGGTTGGCGCTGAAATTGTTTCTCCTGGAAGCGTTTTAGTTTCTGG"
+)
+
+# Split the sequence into non-coding and coding regions
+non_coding_sequence = sequence[:250]
+coding_sequence = sequence[250:]
+
+# Function to construct the Hamiltonian matrix
+def construct_hamiltonian(sequence_length):
+    H = np.zeros((sequence_length, sequence_length), dtype=complex)
+
+    # Set diagonal elements (binding energy)
+    np.fill_diagonal(H, np.random.uniform(*binding_energy_range, size=sequence_length))
+
+    # Set off-diagonal elements (nearest-neighbor coupling)
+    for i in range(sequence_length - 1):
+        H[i, i + 1] = H[i + 1, i] = coupling_strength
+
+    return H
+
+# Quantum evolution function using the realistic Hamiltonian
+def quantum_evolution_realistic(sequence, H, num_steps=100000, dt=1e-13):
+    sequence_length = len(sequence)
+    state = np.zeros(sequence_length, dtype=complex)
+
+    # Initialize quantum states
+    for i, base in enumerate(sequence):
+        if base == 'A': state[i] = 1.0 + 0j
+        elif base == 'T': state[i] = 0 + 1.0j
+        elif base == 'C': state[i] = (1 + 1j) / np.sqrt(2)
+        elif base == 'G': state[i] = 0
+
+    # Time evolution
+    states = np.zeros((num_steps, sequence_length), dtype=complex)
+    U = expm(-1j * H * dt / hbar)  # Calculate matrix exponential once for efficiency
+    for t in range(num_steps):
+        state = np.dot(U, state)  # Update state
+        state /= np.linalg.norm(state)  # Normalize to ensure probability conservation
+        states[t] = state
+
+    return states
+
+# Construct Hamiltonians for non-coding and coding regions
+H_non_coding = construct_hamiltonian(len(non_coding_sequence))
+H_coding = construct_hamiltonian(len(coding_sequence))
+
+# Run quantum evolution for both regions
+non_coding_states = quantum_evolution_realistic(non_coding_sequence, H_non_coding)
+coding_states = quantum_evolution_realistic(coding_sequence, H_coding)
+
+# Extract amplitudes and phases
+amplitude_nc = np.abs(non_coding_states).flatten()
+amplitude_c = np.abs(coding_states).flatten()
+phase_nc = np.angle(non_coding_states).flatten()
+phase_c = np.angle(coding_states).flatten()
+
+# Statistical tests
+t_stat_amp, p_val_amp = ttest_ind(amplitude_nc, amplitude_c, equal_var=False)
+t_stat_phase, p_val_phase = ttest_ind(phase_nc, phase_c, equal_var=False)
+u_stat_amp, p_val_mw_amp = mannwhitneyu(amplitude_nc, amplitude_c, alternative='two-sided')
+u_stat_phase, p_val_mw_phase = mannwhitneyu(phase_nc, phase_c, alternative='two-sided')
+
+# Compile results into a DataFrame
+stats = {
+    "T-test Amplitude": (t_stat_amp, p_val_amp),
+    "T-test Phase": (t_stat_phase, p_val_phase),
+    "Mann-Whitney U Amplitude": (u_stat_amp, p_val_mw_amp),
+    "Mann-Whitney U Phase": (u_stat_phase, p_val_mw_phase)
+}
+results_df = pd.DataFrame.from_dict(stats, orient='index', columns=['Test Statistic', 'p-value'])
+
+# Adjust time axis to picoseconds (ps)
+time_axis_ps = np.linspace(0, num_steps * dt * 1e12, num_steps)  # Time in picoseconds
+
+# Plotting the quantum evolution for non-coding and coding regions
+fig, axs = plt.subplots(2, 1, figsize=(12, 12))
+
+# Plot for non-coding region
+positions_nc = np.linspace(0, len(non_coding_sequence) - 1, 5, dtype=int)
+for i in positions_nc:
+    axs[0].plot(time_axis_ps, np.real(non_coding_states[:, i]), label=f'Real part of state {i + 1}')
+    axs[0].plot(time_axis_ps, np.imag(non_coding_states[:, i]), linestyle='--', label=f'Imag part of state {i + 1}')
+axs[0].set_title('Quantum Evolution (Non-coding Region)')
+axs[0].set_xlabel('Time (ps)')
+axs[0].set_ylabel('Amplitude')
+axs[0].legend()
+axs[0].grid()
+axs[0].xaxis.set_major_locator(ticker.MaxNLocator(10))
+
+# Plot for coding region
+positions_c = np.linspace(0, len(coding_sequence) - 1, 5, dtype=int)
+for i in positions_c:
+    axs[1].plot(time_axis_ps, np.real(coding_states[:, i]), label=f'Real part of state {i + 1}')
+    axs[1].plot(time_axis_ps, np.imag(coding_states[:, i]), linestyle='--', label=f'Imag part of state {i + 1}')
+axs[1].set_title('Quantum Evolution (Coding Region)')
+axs[1].set_xlabel('Time (ps)')
+axs[1].set_ylabel('Amplitude')
+axs[1].legend()
+axs[1].grid()
+axs[1].xaxis.set_major_locator(ticker.MaxNLocator(10))
+
+# Show the plot
+plt.tight_layout()
+plt.show()
+
+# Display statistical test results
+print(results_df)
