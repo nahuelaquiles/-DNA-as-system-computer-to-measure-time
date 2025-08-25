@@ -1,0 +1,315 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import ttest_ind, mannwhitneyu
+from scipy.signal import detrend
+import pandas as pd
+import matplotlib.ticker as ticker
+
+# Constants
+hbar = 6.582119569e-16  # Reduced Planck's constant in eV•s
+binding_energy_range = (0.01, 0.05)  # eV for diagonal elements
+coupling_strength = 0.025  # eV for off-diagonal elements
+dt = 1e-13  # Time step in seconds
+num_steps = 100000  # Number of time steps
+lambda_perturbation = 1e-4  # Base perturbation amplitude in eV
+gain_dBi = 1.7  # Antenna gain in dBi
+frequency_0 = 34e9  # Initial frequency: 34 GHz in Hz
+k = -1e18  # Frequency shift rate in Hz/s (adjust as needed)
+
+# Convert antenna gain from dBi to linear scale
+gain_linear = 10 ** (gain_dBi / 10)
+
+# Amplify the perturbation amplitude by the antenna gain
+lambda_perturbation *= gain_linear
+
+# Define the DNA sequence
+sequence = (
+    "TTCGTCGTTTGTTCTTGGAAAGACAGCGCTGGGGATCGTTCGCTGGATACCACCCGCATAACTGGCTCGTCGCGGTGGGTCAGAGGTCAATGATGAACTTTCAAGTTGACGTGAGAAGCTCTACGGTTGTTGTTCGACTGCTGTTGCGGCCGTCGTGGCGGGTCACGCGTCATGGGCATTCGTCGTTGGCAGTCCCCACG"
+)
+
+# Split the sequence into non-coding and coding regions
+non_coding_sequence = sequence[:100]
+coding_sequence = sequence[101:]
+
+# Function to construct the Hamiltonian matrix
+def construct_hamiltonian(sequence_length):
+    H = np.zeros((sequence_length, sequence_length), dtype=complex)
+
+    # Set diagonal elements (binding energy)
+    np.fill_diagonal(H, np.random.uniform(*binding_energy_range, size=sequence_length))
+
+    # Set off-diagonal elements (nearest-neighbor coupling)
+    for i in range(sequence_length - 1):
+        H[i, i + 1] = H[i + 1, i] = coupling_strength
+
+    return H
+
+# Initialize quantum states with nucleotide-specific complex mapping
+def initialize_state(sequence):
+    sequence_length = len(sequence)
+    state = np.zeros(sequence_length, dtype=complex)
+
+    for i, base in enumerate(sequence):
+        if base == 'A':
+            state[i] = 1.0 + 0j
+        elif base == 'T':
+            state[i] = 0 + 1.0j
+        elif base == 'C':
+            state[i] = (1 + 1j) / np.sqrt(2)
+        elif base == 'G':
+            state[i] = 0
+    return state
+
+# Quantum evolution function with continuous interaction and amplified perturbation
+def quantum_evolution_continuous(H_nc, H_c, num_steps=100000, dt=1e-13, lambda_perturbation=1e-4, frequency_0=34e9, k=-1e18, coupling_nc_c=0.01):
+    len_nc = H_nc.shape[0]
+    len_c = H_c.shape[0]
+    total_length = len_nc + len_c
+
+    # Initialize combined Hamiltonian
+    H_total = np.zeros((total_length, total_length), dtype=complex)
+
+    # Place H_nc and H_c into H_total
+    H_total[:len_nc, :len_nc] = H_nc
+    H_total[len_nc:, len_nc:] = H_c
+
+    # Introduce coupling between non-coding and coding regions
+    H_total[len_nc - 1, len_nc] = H_total[len_nc, len_nc - 1] = coupling_nc_c
+
+    # Initialize combined state vector
+    state_total = np.zeros(total_length, dtype=complex)
+    state_total[:len_nc] = initialize_state(non_coding_sequence)
+    state_total[len_nc:] = initialize_state(coding_sequence)
+
+    # Time evolution with continuous perturbation and interaction
+    states_total = np.zeros((num_steps, total_length), dtype=complex)
+    for t in range(num_steps):
+        time = t * dt
+        frequency_t = frequency_0 + k * time
+        # Apply time-dependent perturbation to non-coding region
+        H_t = H_total.copy()
+        H_t[:len_nc, :len_nc] += np.diag(lambda_perturbation * np.cos(2 * np.pi * frequency_t * time) * np.ones(len_nc))
+
+        # Update total state
+        state_total = state_total - (1j * dt / hbar) * np.dot(H_t, state_total)
+        state_total /= np.linalg.norm(state_total)
+        states_total[t] = state_total
+
+    return states_total
+
+# Construct Hamiltonians for non-coding and coding regions
+H_non_coding = construct_hamiltonian(len(non_coding_sequence))
+H_coding = construct_hamiltonian(len(coding_sequence))
+
+# Run quantum evolution with continuous perturbation and interaction
+states_total = quantum_evolution_continuous(
+    H_non_coding,
+    H_coding,
+    num_steps=num_steps,
+    dt=dt,
+    lambda_perturbation=lambda_perturbation,
+    frequency_0=frequency_0,
+    k=k,
+    coupling_nc_c=0.01  # Adjust coupling strength as needed
+)
+
+# Extract non-coding and coding states
+len_nc = len(non_coding_sequence)
+states_nc = states_total[:, :len_nc]
+states_c = states_total[:, len_nc:]
+
+# Time axis for simulation
+time_axis_ps = np.linspace(0, num_steps * dt * 1e12, num_steps)  # Time in picoseconds
+
+# Analyze amplitudes and phases
+amplitude_nc = np.abs(states_nc)
+amplitude_c = np.abs(states_c)
+phase_nc = np.angle(states_nc)
+phase_c = np.angle(states_c)
+
+# Time-averaged amplitudes and phases
+mean_amplitude_nc = amplitude_nc.mean(axis=0)
+mean_amplitude_c = amplitude_c.mean(axis=0)
+mean_phase_nc = phase_nc.mean(axis=0)
+mean_phase_c = phase_c.mean(axis=0)
+
+# Statistical tests on time-averaged data
+t_stat_amp, p_val_amp = ttest_ind(mean_amplitude_nc, mean_amplitude_c, equal_var=False)
+t_stat_phase, p_val_phase = ttest_ind(mean_phase_nc, mean_phase_c, equal_var=False)
+u_stat_amp, p_val_mw_amp = mannwhitneyu(mean_amplitude_nc, mean_amplitude_c, alternative='two-sided')
+u_stat_phase, p_val_mw_phase = mannwhitneyu(mean_phase_nc, mean_phase_c, alternative='two-sided')
+
+# Compile results into a DataFrame
+stats = {
+    "T-test Amplitude": (t_stat_amp, p_val_amp),
+    "T-test Phase": (t_stat_phase, p_val_phase),
+    "Mann-Whitney U Amplitude": (u_stat_amp, p_val_mw_amp),
+    "Mann-Whitney U Phase": (u_stat_phase, p_val_mw_phase)
+}
+results_df = pd.DataFrame.from_dict(stats, orient='index', columns=['Test Statistic', 'p-value'])
+
+# Plotting the quantum evolution for non-coding and coding regions
+fig, axs = plt.subplots(3, 1, figsize=(12, 18))
+
+# Plot for non-coding region
+positions_nc = np.linspace(0, len(non_coding_sequence) - 1, 5, dtype=int)
+for i in positions_nc:
+    axs[0].plot(time_axis_ps, np.real(states_nc[:, i]), label=f'Real part of state {i + 1}')
+    axs[0].plot(time_axis_ps, np.imag(states_nc[:, i]), linestyle='--', label=f'Imag part of state {i + 1}')
+axs[0].set_title('Quantum Evolution (Non-coding Region)')
+axs[0].set_xlabel('Time (ps)')
+axs[0].set_ylabel('Amplitude')
+axs[0].legend()
+axs[0].grid()
+axs[0].xaxis.set_major_locator(ticker.MaxNLocator(10))
+
+# Plot for coding region
+positions_c = np.linspace(0, len(coding_sequence) - 1, 5, dtype=int)
+for i in positions_c:
+    axs[1].plot(time_axis_ps, np.real(states_c[:, i]), label=f'Real part of state {i + 1}')
+    axs[1].plot(time_axis_ps, np.imag(states_c[:, i]), linestyle='--', label=f'Imag part of state {i + 1}')
+axs[1].set_title('Quantum Evolution (Coding Region)')
+axs[1].set_xlabel('Time (ps)')
+axs[1].set_ylabel('Amplitude')
+axs[1].legend()
+axs[1].grid()
+axs[1].xaxis.set_major_locator(ticker.MaxNLocator(10))
+
+# Plot frequency shift over time
+time_axis_s = np.linspace(0, num_steps * dt, num_steps)
+frequency_t = frequency_0 + k * time_axis_s  # Frequency over time
+axs[2].plot(time_axis_ps, frequency_t / 1e9)  # Convert to GHz for plotting
+axs[2].set_title('Frequency Shift Over Time')
+axs[2].set_xlabel('Time (ps)')
+axs[2].set_ylabel('Frequency (GHz)')
+axs[2].grid()
+axs[2].xaxis.set_major_locator(ticker.MaxNLocator(10))
+
+# Show the plot
+plt.tight_layout()
+plt.show()
+
+# Display statistical test results
+print(results_df)
+
+# Spectral Analysis
+
+# Step 1: Prepare the Phase Data
+# Select positions to analyze (you can adjust the number of positions as needed)
+positions_nc_fft = np.linspace(0, len(non_coding_sequence) - 1, 10, dtype=int)
+positions_c_fft = np.linspace(0, len(coding_sequence) - 1, 10, dtype=int)
+
+# Extract and average the phase data across selected positions
+average_phase_nc = np.mean(phase_nc[:, positions_nc_fft], axis=1)
+average_phase_c = np.mean(phase_c[:, positions_c_fft], axis=1)
+
+# Detrend the phase data to focus on oscillatory components
+detrended_phase_nc = detrend(average_phase_nc)
+detrended_phase_c = detrend(average_phase_c)
+
+# Step 2: Perform Fourier Transforms
+# Perform FFT
+fft_nc = np.fft.fft(detrended_phase_nc)
+fft_c = np.fft.fft(detrended_phase_c)
+
+# Compute corresponding frequencies
+num_samples = len(detrended_phase_nc)
+freqs = np.fft.fftfreq(num_samples, d=dt)  # Sample spacing is dt
+
+# Take only the positive frequencies
+positive_freqs = freqs[:num_samples // 2]
+fft_nc_positive = fft_nc[:num_samples // 2]
+fft_c_positive = fft_c[:num_samples // 2]
+
+# Convert frequencies to GHz for better readability
+positive_freqs_GHz = positive_freqs / 1e9
+
+# Step 3: Plot the FFT Amplitude Spectra
+# Plot the FFT amplitude spectra
+plt.figure(figsize=(12, 6))
+plt.plot(positive_freqs_GHz, np.abs(fft_nc_positive), label='Non-coding Region')
+plt.plot(positive_freqs_GHz, np.abs(fft_c_positive), label='Coding Region', alpha=0.7)
+plt.title('FFT of Phase Data')
+plt.xlabel('Frequency (GHz)')
+plt.ylabel('Amplitude')
+plt.legend()
+plt.grid()
+plt.xlim(0, 50)  # Focus on frequencies up to 50 GHz
+plt.ylim(0, 800)  # Adjust y-axis limit as requested
+plt.show()
+
+# Step 4: Identify Expected Frequency Range Due to Doppler Shift
+# Calculate the total frequency shift over the simulation time
+time_total = num_steps * dt  # Total simulation time in seconds
+frequency_shift = k * time_total  # Total frequency shift in Hz
+
+# Initial and final frequencies in GHz
+frequency_start = frequency_0 / 1e9  # Initial frequency (34 GHz)
+frequency_end = (frequency_0 + frequency_shift) / 1e9  # Final frequency
+
+print(f"Expected frequency range due to Doppler shift: {frequency_end:.2f} GHz to {frequency_start:.2f} GHz")
+
+# Step 5: Highlight Expected Frequency Range on the Plot
+# Plot with expected frequency range highlighted
+plt.figure(figsize=(12, 6))
+plt.plot(positive_freqs_GHz, np.abs(fft_nc_positive), label='Non-coding Region')
+plt.plot(positive_freqs_GHz, np.abs(fft_c_positive), label='Coding Region', alpha=0.7)
+plt.axvspan(frequency_end, frequency_start, color='yellow', alpha=0.3, label='Expected Doppler Shift Range')
+plt.title('FFT of Phase Data with Expected Doppler Shift Range')
+plt.xlabel('Frequency (GHz)')
+plt.ylabel('Amplitude')
+plt.legend()
+plt.grid()
+plt.xlim(0, 50)  # Adjust as needed
+plt.ylim(0, 800)  # Adjust y-axis limit as requested
+plt.show()
+
+# Step 6: Analyze and Interpret the Results
+# Define the frequency indices corresponding to the expected range
+freq_indices = np.where((positive_freqs_GHz >= frequency_end) & (positive_freqs_GHz <= frequency_start))[0]
+
+# Calculate the power (squared amplitude) within this range
+power_nc = np.sum(np.abs(fft_nc_positive[freq_indices])**2)
+power_c = np.sum(np.abs(fft_c_positive[freq_indices])**2)
+
+print(f"Power within expected frequency range:")
+print(f"Non-coding region: {power_nc}")
+print(f"Coding region: {power_c}")
+
+# Calculate the power ratio
+power_ratio = power_nc / power_c if power_c != 0 else np.inf
+print(f"Power ratio (Non-coding / Coding): {power_ratio}")
+
+# Step 7: Perform Statistical Testing Across Multiple Positions
+# Initialize lists to store power values
+power_values_nc = []
+power_values_c = []
+
+# For non-coding region
+for i in positions_nc_fft:
+    phase_i_nc = detrend(phase_nc[:, i])
+    fft_i_nc = np.fft.fft(phase_i_nc)
+    fft_i_nc_positive = fft_i_nc[:num_samples // 2]
+    power_i_nc = np.sum(np.abs(fft_i_nc_positive[freq_indices])**2)
+    power_values_nc.append(power_i_nc)
+
+# For coding region
+for i in positions_c_fft:
+    phase_i_c = detrend(phase_c[:, i])
+    fft_i_c = np.fft.fft(phase_i_c)
+    fft_i_c_positive = fft_i_c[:num_samples // 2]
+    power_i_c = np.sum(np.abs(fft_i_c_positive[freq_indices])**2)
+    power_values_c.append(power_i_c)
+
+# Perform t-test on power values
+t_stat_power, p_val_power = ttest_ind(power_values_nc, power_values_c, equal_var=False)
+
+print(f"T-test on power values within expected frequency range:")
+print(f"Test Statistic: {t_stat_power}, p-value: {p_val_power}")
+
+# Optional: Plot power values for visual comparison
+plt.figure(figsize=(8, 6))
+plt.boxplot([power_values_nc, power_values_c], labels=['Non-coding Region', 'Coding Region'])
+plt.ylabel('Power within Expected Frequency Range')
+plt.title('Comparison of Power between Regions')
+plt.show()
