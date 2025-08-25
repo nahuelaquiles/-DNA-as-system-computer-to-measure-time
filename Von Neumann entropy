@@ -1,0 +1,158 @@
+import numpy as np
+import pandas as pd
+from scipy.stats import ttest_ind
+import matplotlib.pyplot as plt
+
+# Mapping of DNA bases to qubit states
+qubit_mapping = {
+    'A': np.array([1, 0]),
+    'T': np.array([0, 1]),
+    'C': np.array([1, 1]),
+    'G': np.array([0, 0])
+}
+
+def manual_extract_genome_sequence(file_path):
+    """
+    Extracts the genome sequence from a FASTA file.
+
+    Parameters:
+        file_path (str): Path to the FASTA file.
+
+    Returns:
+        str: The concatenated genome sequence.
+    """
+    genome_seq = []
+    with open(file_path, 'r') as f:
+        for line in f:
+            if not line.startswith('>'):
+                genome_seq.append(line.strip())
+    return "".join(genome_seq)
+
+def extract_region_sequences(genome_sequence, regions):
+    """
+    Extracts sequences for each region specified in the regions DataFrame.
+
+    Parameters:
+        genome_sequence (str): The full genome sequence.
+        regions (pd.DataFrame): DataFrame containing 'Start' and 'End' positions.
+
+    Returns:
+        list: A list of sequences corresponding to each region.
+    """
+    region_sequences = []
+    for _, row in regions.iterrows():
+        start = int(row["Start"]) - 1  # Adjust for 0-based indexing
+        end = int(row["End"])
+        region_sequences.append(genome_sequence[start:end])
+    return region_sequences
+
+def sequence_to_qubits(sequence):
+    """
+    Maps a DNA sequence to qubit states.
+
+    Parameters:
+        sequence (str): DNA sequence.
+
+    Returns:
+        np.ndarray: Array of qubit states.
+    """
+    return np.array([qubit_mapping[base] for base in sequence if base in qubit_mapping])
+
+def calculate_density_matrix(qubits):
+    """
+    Calculates the density matrix for a set of qubit states.
+
+    Parameters:
+        qubits (np.ndarray): Array of qubit states.
+
+    Returns:
+        np.ndarray: The density matrix.
+    """
+    n = len(qubits)
+    density_matrix = sum(np.outer(q, q) for q in qubits) / n
+    return density_matrix
+
+def von_neumann_entropy(density_matrix):
+    """
+    Calculates the von Neumann entropy of a density matrix.
+
+    Parameters:
+        density_matrix (np.ndarray): The density matrix.
+
+    Returns:
+        float: The calculated entropy.
+    """
+    eigenvalues = np.linalg.eigvalsh(density_matrix)
+    entropy = -sum(e * np.log2(e) for e in eigenvalues if e > 0)
+    return entropy
+
+def process_regions(sequences):
+    """
+    Processes a list of sequences to calculate their entropies.
+
+    Parameters:
+        sequences (list): List of DNA sequences.
+
+    Returns:
+        list: List of entropy values for each sequence.
+    """
+    entropies = []
+    for sequence in sequences:
+        qubits = sequence_to_qubits(sequence)
+        if len(qubits) > 0:
+            density_matrix = calculate_density_matrix(qubits)
+            entropy = von_neumann_entropy(density_matrix)
+            entropies.append(entropy)
+    return entropies
+
+def main():
+    # Paths to input files
+    genome_file = 'path_to_genome.fna'      # Replace with your FASTA file path
+    regions_file = 'path_to_regions.csv'    # Replace with your regions CSV file path
+    
+    # Read the genome sequence
+    genome_sequence = manual_extract_genome_sequence(genome_file)
+    print("Genome sequence extracted.")
+
+    # Read the regions (assuming the CSV has columns: 'Start', 'End', 'Type')
+    regions_df = pd.read_csv(regions_file)
+    print("Regions data loaded.")
+
+    # Separate coding and non-coding regions
+    coding_regions = regions_df[regions_df['Type'] == 'Coding']
+    non_coding_regions = regions_df[regions_df['Type'] == 'Non-Coding']
+    print(f"Found {len(coding_regions)} coding regions and {len(non_coding_regions)} non-coding regions.")
+
+    # Extract sequences for coding and non-coding regions
+    coding_sequences = extract_region_sequences(genome_sequence, coding_regions)
+    non_coding_sequences = extract_region_sequences(genome_sequence, non_coding_regions)
+    print("Sequences for all regions extracted.")
+
+    # Process sequences to compute entropies
+    coding_entropies = process_regions(coding_sequences)
+    non_coding_entropies = process_regions(non_coding_sequences)
+    print("Entropy calculations completed.")
+
+    # Perform t-test
+    t_stat, p_value = ttest_ind(coding_entropies, non_coding_entropies, equal_var=False)
+    print(f"\nT-Test Statistic: {t_stat:.2f}")
+    print(f"P-Value: {p_value:.2e}")
+
+    # Plot histograms
+    plt.figure(figsize=(10, 6))
+    plt.hist(coding_entropies, bins=50, alpha=0.7, label='Coding', color='green')
+    plt.hist(non_coding_entropies, bins=50, alpha=0.7, label='Non-Coding', color='red')
+    plt.title("Normalized Entropy Distribution - Coding vs Non-Coding")
+    plt.xlabel("Normalized Entropy")
+    plt.ylabel("Frequency")
+    plt.legend(loc='upper right')
+    plt.show()
+
+    # Compute and print descriptive statistics
+    print("\nDescriptive Statistics:")
+    print("Region Type\tMean Entropy\tStd Dev\tMin\tMax")
+    print(f"Coding\t\t{np.mean(coding_entropies):.4f}\t\t{np.std(coding_entropies):.4f}\t{np.min(coding_entropies):.3f}\t{np.max(coding_entropies):.3f}")
+    print(f"Non-Coding\t{np.mean(non_coding_entropies):.4f}\t\t{np.std(non_coding_entropies):.4f}\t{np.min(non_coding_entropies):.3f}\t{np.max(non_coding_entropies):.3f}")
+
+if __name__ == "__main__":
+    main()
